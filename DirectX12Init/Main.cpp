@@ -1,6 +1,5 @@
 #include <windows.h>
 #include <wrl.h>
-#include <cstdlib>
 
 #include <d3d12.h>
 #pragma comment(lib, "d3d12.lib")
@@ -10,6 +9,33 @@
 using Microsoft::WRL::ComPtr;
 
 LRESULT CALLBACK WindowProc( HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam );
+
+bool Init( HWND hwnd );
+bool InitPipeline( HWND hwnd );
+bool InitResource();
+bool Render();
+bool PopulateCommandList();
+bool WaitForPreviousFrame();
+bool Destroy();
+
+const UINT FRAME_COUNT = 2;
+
+ComPtr<ID3D12Device> g_device;
+ComPtr<ID3D12CommandQueue> g_commandQueue;
+ComPtr<IDXGISwapChain3> g_swapChain;
+ComPtr<ID3D12DescriptorHeap> g_rtvHeap;
+ComPtr<ID3D12Resource> g_renderTarget[FRAME_COUNT];
+ComPtr<ID3D12CommandAllocator> g_commandAllocator;
+ComPtr<ID3D12GraphicsCommandList> g_commandList;
+ComPtr<ID3D12Fence> g_fence;
+ComPtr<ID3D12PipelineState> g_pipelineState;
+
+bool g_useWarpDevice = false;
+UINT g_frameIndex = 0;
+UINT g_rtvDescriptorSize = 0;
+UINT g_fenceValue;
+HANDLE g_fenceEvent;
+
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 {
@@ -39,10 +65,84 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 		nullptr,
 		);
 
-	//DirectX12の初期化-----------------------------------
+	if(!Init(hwnd))
+	{
+		return -1;
+	}
 
+	ShowWindow(hwnd,SW_SHOW);
+	UpdateWindow(hwnd);
+
+	MSG msg;
+	while(true)
+	{
+		if(PeekMessage(&msg,nullptr,0,0,PM_REMOVE))
+		{
+			if( msg.message == WM_QUIT )
+			{
+				break;
+			}
+
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
+		}
+		else
+		{
+			if(!Render())
+			{
+				return -1;
+			}
+		}
+	}
+
+	if(!Destroy())
+	{
+		return -1;
+	}
+
+	return 0;
+}
+
+LRESULT CALLBACK WindowProc( HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam )
+{
+	switch(message)
+	{
+	case WM_DESTROY:
+		//終了メッセージ送信
+		PostQuitMessage(0);
+
+		return 0;
+	}
+
+	return DefWindowProc(hWnd, message, wParam, lParam);
+}
+
+//初期化
+bool Init(HWND hwnd )
+{
+	//DirectX12の初期化
+
+	//パイプラインの初期化
+	if(!InitPipeline( hwnd ))
+	{
+		return false;
+	}
+	
+	//リソースの初期化
+	if(!InitResource())
+	{
+		return false;
+	}
+
+	return true;
+}
+
+//パイプラインの初期化
+bool InitPipeline( HWND hwnd )
+{
 	UINT digixFactoryFlags = 0;
 
+#if defined(_DEBUG)
 	//デバッグレイヤーを有効にする
 	{
 		ComPtr<ID3D12Debug> debugController;
@@ -54,30 +154,29 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 			digixFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
 		}
 	}
+#endif
 
 	//DirectX12がサポートする利用可能なハードウエアアダプタを取得
 	ComPtr<IDXGIFactory4> factory;
 	if( FAILED( CreateDXGIFactory2( digixFactoryFlags,IID_PPV_ARGS(&factory) ) ) )
 	{
-		return -1;
+		return false;
 	}
-	bool useWarpDevice = true;
 
-	ComPtr<ID3D12Device> device;
-
-	if( useWarpDevice )
+	//デバイス作成
+	if( g_useWarpDevice )
 	{
 		ComPtr<IDXGIAdapter> warpAdapter;
 		if( FAILED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warpAdapter))) )
 		{
-			return -1;
+			return false;
 		}
 		if( FAILED(D3D12CreateDevice(
 			warpAdapter.Get(),
 			D3D_FEATURE_LEVEL_11_0,
-			IID_PPV_ARGS(&device))))
+			IID_PPV_ARGS(&g_device))))
 		{
-			return -1;
+			return false;
 		}
 	}
 	else
@@ -108,9 +207,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 		if( FAILED(D3D12CreateDevice(
 			hardwareAdapter.Get(),
 			D3D_FEATURE_LEVEL_11_0,
-			IID_PPV_ARGS(&device))))
+			IID_PPV_ARGS(&g_device))))
 		{
-			return -1;
+			return false;
 		}
 	}
 
@@ -119,10 +218,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 	queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
 	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
-	ComPtr<ID3D12CommandQueue> commandQueue;
-	if( FAILED( device->CreateCommandQueue( &queueDesc, IID_PPV_ARGS(&commandQueue) ) ) )
+	if( FAILED( g_device->CreateCommandQueue( &queueDesc, IID_PPV_ARGS(&g_commandQueue) ) ) )
 	{
-		return -1;
+		return false;
 	}
 
 
@@ -138,31 +236,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 
 	ComPtr<IDXGISwapChain1> swapChain;
 	if( FAILED( factory->CreateSwapChainForHwnd(
-		commandQueue.Get(),
+		g_commandQueue.Get(),
 		hwnd,
 		&swapChainDesc,
 		nullptr,
 		nullptr,
 		&swapChain ) ) )
 	{
-		return -1;
+		return false;
 	}
 
 	//フルスクリーンサポートなし
 	if( FAILED( factory->MakeWindowAssociation( hwnd, DXGI_MWA_NO_ALT_ENTER ) ) )
 	{
-		return -1;
+		return false;
 	}
 
-	ComPtr<IDXGISwapChain3> swapChain3;
-	if( FAILED( swapChain.As(&swapChain3) ) )
+	if( FAILED( swapChain.As(&g_swapChain) ) )
 	{
-		return -1;
+		return false;
 	}
-	UINT frameIndex = swapChain3->GetCurrentBackBufferIndex();
+	g_frameIndex = g_swapChain->GetCurrentBackBufferIndex();
 
-	ComPtr<ID3D12DescriptorHeap> rtvHeap;
-	UINT rtvDespriptorSize = 0;
+	
+	
 	//記述子ヒープ作成
 	{
 		//レンダーターゲットビュー用の記述子ヒープ作成
@@ -170,185 +267,201 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 		rtvHeapDesc.NumDescriptors = 2;
 		rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 		rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-		if( FAILED( device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&rtvHeap)) ) )
+		if( FAILED( g_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&g_rtvHeap)) ) )
 		{
-			return -1;
+			return false;
 		}
-		rtvDespriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+		g_rtvDescriptorSize = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 	}
 
-	ComPtr<ID3D12Resource> renderTarget[2];
 	//フレームリソースの作成
 	{
 		D3D12_CPU_DESCRIPTOR_HANDLE	rtvHandle = {};
-		rtvHandle.ptr = rtvHeap->GetCPUDescriptorHandleForHeapStart().ptr;
+		rtvHandle.ptr = g_rtvHeap->GetCPUDescriptorHandleForHeapStart().ptr;
 
-		//フレームバッファとバックバッファのレンダーターゲットビューを作成
-		for(UINT n = 0;n < 2;n++)
+		//各フレームのレンダーターゲットビューを作成
+		for(UINT n = 0;n < FRAME_COUNT;n++)
 		{
-			if( FAILED( swapChain3->GetBuffer( n, IID_PPV_ARGS( &renderTarget[n] ) ) ) )
+			if( FAILED( g_swapChain->GetBuffer( n, IID_PPV_ARGS( &g_renderTarget[n] ) ) ) )
 			{
-				return -1;
+				return false;
 			}
-			device->CreateRenderTargetView( renderTarget[n].Get(), nullptr, rtvHandle );
-			rtvHandle.ptr += rtvDespriptorSize;
+			g_device->CreateRenderTargetView( g_renderTarget[n].Get(), nullptr, rtvHandle );
+			rtvHandle.ptr += g_rtvDescriptorSize;
 
 		}
 	}
-	ComPtr<ID3D12CommandAllocator> commandAllocator;
-	if( FAILED( device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator)) ) )
+	
+	//コマンドアロケーター作成
+	if( FAILED( g_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_commandAllocator)) ) )
 	{
-		return -1;
+		return false;
 	}
 
-	ComPtr<ID3D12GraphicsCommandList> commandList;
+	return true;
+}
+
+//リソースの初期化
+bool InitResource()
+{
 	//コマンドリスト作成
-	if( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator.Get(), nullptr, IID_PPV_ARGS( &commandList ) ) ) )
+	if( FAILED( g_device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_commandAllocator.Get(), nullptr, IID_PPV_ARGS( &g_commandList ) ) ) )
 	{
-		return -1;
+		return false;
 	}
 
-	if( FAILED( commandList->Close() ) )
+	//コマンドリストを閉じる
+	if( FAILED( g_commandList->Close() ) )
 	{
-		return -1;
+		return false;
 	}
 
-	ComPtr<ID3D12Fence> fence;
-	UINT fenceValue;
-	HANDLE fenceEvent;
 	//同期オブジェクトを作成してリソースがGPUがアップロードされるまで待つ
 	{
-		if( FAILED( device->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence) ) ) )
+		//フェンス作成
+		if( FAILED( g_device->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_fence) ) ) )
 		{
-			return -1;
+			return false;
 		}
-		fenceValue = 1;
+		g_fenceValue = 1;
 
-		fenceEvent = CreateEvent( nullptr, FALSE, FALSE, nullptr );
-		if(fenceEvent == nullptr)
+		//イベントハンドル作成
+		g_fenceEvent = CreateEvent( nullptr, FALSE, FALSE, nullptr );
+		if(g_fenceEvent == nullptr)
 		{
 			if( FAILED( HRESULT_FROM_WIN32( GetLastError() ) ) )
 			{
-				return -1;
+				return false;
 			}
+		}
+
+		//前のフレームを待つ
+		if(!WaitForPreviousFrame())
+		{
+			return false;
 		}
 	}
 
-	ShowWindow(hwnd,SW_SHOW);
-	UpdateWindow(hwnd);
+	return true;
+}
 
-	MSG msg;
-	ComPtr<ID3D12PipelineState> pipelineState;
-	while(true)
+//描画
+bool Render()
+{
+	//コマンドリストの内容を用意する
+	if(!PopulateCommandList())
 	{
-		if(PeekMessage(&msg,nullptr,0,0,PM_REMOVE))
-		{
-			if( msg.message == WM_QUIT )
-			{
-				break;
-			}
-
-			TranslateMessage(&msg);
-			DispatchMessage(&msg);
-		}
-		else
-		{
-			if(FAILED( commandAllocator->Reset() ))
-			{
-				return -1;
-			}
-
-			if( FAILED( commandList->Reset( commandAllocator.Get(), pipelineState.Get() ) ) )
-			{
-				return -1;
-			}
-
-			//バックバッファをレンダーターゲットとして指定
-			{
-				D3D12_RESOURCE_BARRIER resourceBarrier = {};
-				resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-				resourceBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-				resourceBarrier.Transition.pResource = renderTarget[frameIndex].Get();
-				resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-				resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-				resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-				commandList->ResourceBarrier( 1, &resourceBarrier );
-			}
-
-			D3D12_CPU_DESCRIPTOR_HANDLE	rtvHandle = {};
-			rtvHandle.ptr = rtvHeap->GetCPUDescriptorHandleForHeapStart().ptr+frameIndex*rtvDespriptorSize;
-			commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-
-			//バックバッファ描画
-			const float clearColor[] = { 1.0f, 0.0f, 0.0f, 1.0f };
-			commandList->ClearRenderTargetView( rtvHandle, clearColor, 0, nullptr );
-
-			//バックバッファを表示
-			{
-				D3D12_RESOURCE_BARRIER resourceBarrier = {};
-				resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-				resourceBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-				resourceBarrier.Transition.pResource = renderTarget[frameIndex].Get();
-				resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-				resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-				resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-				commandList->ResourceBarrier( 1, &resourceBarrier );
-			}
-
-			if( FAILED( commandList->Close() ) )
-			{
-				return -1;
-			}
-
-			//コマンドリストを実行
-			ID3D12CommandList* ppCommandList[] = {commandList.Get()};
-			commandQueue->ExecuteCommandLists(_countof(ppCommandList), ppCommandList);
-
-			if( FAILED( swapChain3->Present(1,0) ) )
-			{
-				return -1;
-			}
-
-
-			//簡単に実装するために続行する前にフレームが終わるまで待つ
-			const UINT64 fenceNum = fenceValue;
-			if( FAILED( commandQueue->Signal( fence.Get(), fenceNum ) ) )
-			{
-				return -1;
-			}
-			fenceValue++;
-			if( fence->GetCompletedValue() < fenceNum )
-			{
-				if( FAILED( fence->SetEventOnCompletion( fenceNum, fenceEvent ) ))
-				{
-					return -1;
-				}
-				WaitForSingleObject(fenceEvent,INFINITE);
-			}
-			frameIndex = swapChain3->GetCurrentBackBufferIndex();
-		}
+		return false;
 	}
 
-	const UINT64 fenceNum = fenceValue;
-	if( FAILED( commandQueue->Signal( fence.Get(), fenceNum ) ) )
+	//コマンドリストを実行
+	ID3D12CommandList* ppCommandList[] = {g_commandList.Get()};
+	g_commandQueue->ExecuteCommandLists(_countof(ppCommandList), ppCommandList);
+
+	//バックバッファを表示
+	if( FAILED( g_swapChain->Present(1,0) ) )
 	{
 		return -1;
 	}
-	fenceValue++;
-	if( fence->GetCompletedValue() < fenceNum )
+
+	//前のフレームを待つ
+	if(!WaitForPreviousFrame())
 	{
-		if( FAILED( fence->SetEventOnCompletion( fenceNum, fenceEvent ) ))
-		{
-			return -1;
-		}
-		WaitForSingleObject(fenceEvent,INFINITE);
+		return false;
 	}
-	frameIndex = swapChain3->GetCurrentBackBufferIndex();
 
-	return 0;
+	return true;
 }
 
-LRESULT CALLBACK WindowProc( HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam )
+bool PopulateCommandList()
 {
-	return DefWindowProc(hWnd, message, wParam, lParam);
+	//コマンドリストのアロケーターをリセット
+	if(FAILED( g_commandAllocator->Reset() ))
+	{
+		return false;
+	}
+
+	//コマンドリストをリセット
+	if( FAILED( g_commandList->Reset( g_commandAllocator.Get(), g_pipelineState.Get() ) ) )
+	{
+		return false;
+	}
+
+	//リソースバリアを設定してバックバッファをレンダーターゲットとして指定
+	{
+		D3D12_RESOURCE_BARRIER resourceBarrier = {};
+		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		resourceBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+		resourceBarrier.Transition.pResource = g_renderTarget[g_frameIndex].Get();
+		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+		resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		g_commandList->ResourceBarrier( 1, &resourceBarrier );
+	}
+
+	D3D12_CPU_DESCRIPTOR_HANDLE	rtvHandle = {};
+	rtvHandle.ptr = g_rtvHeap->GetCPUDescriptorHandleForHeapStart().ptr+g_frameIndex*g_rtvDescriptorSize;
+	g_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+	//バックバッファ描画
+	const float clearColor[] = { 1.0f, 0.0f, 0.0f, 1.0f };
+	g_commandList->ClearRenderTargetView( rtvHandle, clearColor, 0, nullptr );
+
+	//バックバッファを表示
+	{
+		D3D12_RESOURCE_BARRIER resourceBarrier = {};
+		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		resourceBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+		resourceBarrier.Transition.pResource = g_renderTarget[g_frameIndex].Get();
+		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+		resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		g_commandList->ResourceBarrier( 1, &resourceBarrier );
+	}
+
+	//コマンドリストを閉じる
+	if( FAILED( g_commandList->Close() ) )
+	{
+		return false;
+	}
+
+	return true;
 }
+
+bool WaitForPreviousFrame()
+{
+	//簡単に実装するために続行する前にフレームが終わるまで待つ
+	const UINT64 fence = g_fenceValue;
+	if( FAILED( g_commandQueue->Signal( g_fence.Get(), fence ) ) )
+	{
+		return false;
+	}
+	g_fenceValue++;
+	if( g_fence->GetCompletedValue() < fence )
+	{
+		if( FAILED( g_fence->SetEventOnCompletion( fence, g_fenceEvent ) ))
+		{
+			return false;
+		}
+		WaitForSingleObject(g_fenceEvent,INFINITE);
+	}
+	g_frameIndex = g_swapChain->GetCurrentBackBufferIndex();
+
+	return true;
+}
+
+bool Destroy()
+{
+	//前のフレームを待つ
+	if(!WaitForPreviousFrame())
+	{
+		return false;
+	}
+
+	//イベントハンドルを閉じる
+	CloseHandle(g_fenceEvent);
+	
+	return true;
+}
+
+
