@@ -1,6 +1,7 @@
 struct GSInput
 {
 	float4 position : SV_POSITION;
+	float scale : PSIZE;
 };
 struct PSInput
 {
@@ -13,10 +14,11 @@ Texture2D g_texture : register(t0);
 SamplerState g_sampler : register(s0);
 
 
-GSInput VSMain(float4 position : POSITION)
+GSInput VSMain(float4 position : POSITION,float scale : PSIZE)
 {
 	GSInput result;
 	result.position = position;
+	result.scale = scale;
 	//result.color = color;
 	//result.uv = uv;
 
@@ -45,7 +47,7 @@ void GSMain(point GSInput In[1], inout TriangleStream<PSInput> stream)
 	uv[3] = float2(1.0,1.0);
 	for(int i = 0;i < 4;i++)
 	{
-		float4 position = In[0].position + offset[i];
+		float4 position = In[0].position + (offset[i] * In[0].scale);
 		position = mul(world,position);
 		position = mul(view,position);
 		v[i].position = mul(proj,position);

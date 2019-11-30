@@ -88,6 +88,7 @@ const UINT FRAME_COUNT = 2;
 struct Vertex
 {
 	XMFLOAT3 possition;
+	float scale;
 	//XMFLOAT4 color;
 	//XMFLOAT2 uv;
 };
@@ -1042,6 +1043,7 @@ bool CreatePipelineStateObject()
 	D3D12_INPUT_ELEMENT_DESC inputElementDescs[] =
 	{
 		{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{"PSIZE", 0, DXGI_FORMAT_R32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 		//{"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 		//{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 	};
@@ -1063,8 +1065,8 @@ bool CreatePipelineStateObject()
 	//レンダーターゲットのブレンド設定
 	D3D12_RENDER_TARGET_BLEND_DESC renderTargetBlendStateDesc =
 	{
-		FALSE,FALSE,
-		D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+		TRUE,FALSE,
+		D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD,
 		D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
 		D3D12_LOGIC_OP_NOOP,
 		D3D12_COLOR_WRITE_ENABLE_ALL
@@ -1114,9 +1116,9 @@ bool CreateVertexBuffer()
 	//三角形のジオメトリを定義
 	Vertex vertices[] =
 	{
-		{ {0.5f, 1.0f, 0.0f} },
-		{ {1.0f, -1.0f, 0.0f} },
-		{ {-1.0f, -1.0f, 0.0f}},
+		{ {0.0f, 1.0f, 0.0f}, 1.0f },
+		{ {1.0f, -1.0f, 0.0f}, 5.0f },
+		{ {-1.0f, -1.0f, 0.0f}, 10.0f},
 
 		/*{ {1.0f, 1.0f, 0.0f}, { 1.0f, 0.0f } },
 		{ {1.0f, -1.0f, 0.0f}, { 1.0f, 1.0f } },
@@ -1240,7 +1242,7 @@ bool CreateCbvSrv()
 		}
 		//XMMATRIX proj = XMMatrixOrthographicLH(1280.0f,720.0f,10.0f,100000.0f);
 		g_constantBufferData.world = XMMatrixIdentity();
-		g_constantBufferData.view = XMMatrixLookAtLH({0.0f,0.0f,-5.0f,0.0f},{0.0f,0.0f,0.0f,0.0f},{0.0f,1.0f,0.0f,0.0f});
+		g_constantBufferData.view = XMMatrixLookAtLH({0.0f,0.0f,-10.0f,0.0f},{0.0f,0.0f,0.0f,0.0f},{0.0f,1.0f,0.0f,0.0f});
 		g_constantBufferData.project = XMMatrixPerspectiveFovLH(0.78539816339744830961566084581988f,1280.0f/720.0f,1.0f,1000.0f);
 		memcpy(g_pCbvDataBegin,&g_constantBufferData,sizeof(g_constantBufferData));
 	}
@@ -1791,7 +1793,7 @@ std::vector<UINT8> LoadTexture( const char* fileName )
 			color32[i].r = color[i].b;
 			color32[i].g = color[i].g;
 			color32[i].b = color[i].r;
-			color32[i].a = 255;
+			color32[i].a = 122;
 		}
 
 		memcpy(&data[0],color32,sizeof(BitmapColor32) * colorSize);
