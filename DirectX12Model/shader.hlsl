@@ -14,12 +14,21 @@ cbuffer LightBuffer : register(b1)
 {
 	float3 light;
 };
+cbuffer MaterialBuffer : register(b2)
+{
+	float3 diffuse;
+	float alpha;
+	float3 ambient;
+	float3 specular;
+	float power;
+	float3 emmisive;
+};
 
 Texture2D g_texture : register(t0);
 SamplerState g_sampler : register(s0);
 
 
-PSInput VSMain(float4 position : POSITION, float4 normal : NORMAL)
+PSInput VSMain(float4 position : POSITION, float4 normal : NORMAL, float2 uv : TEXCOORD)
 {
     PSInput result;
 	result.position = mul(world,position);
@@ -37,5 +46,5 @@ float4 PSMain(PSInput input) : SV_TARGET
 	float p = dot(input.normal, -light.xyz);
 	p = p * 0.2 + 0.8;
 	p = p * p;
-	return p; // * g_texture.Sample(g_sampler, input.uv);
+	return p * float4(diffuse,1.0); // * g_texture.Sample(g_sampler, input.uv);
 }

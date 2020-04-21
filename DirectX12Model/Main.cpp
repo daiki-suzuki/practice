@@ -52,13 +52,38 @@ struct Vertex
 {
 	float position[3];
 	float normal[3];
-	//float textureCoord[2];
+	float textureCoord[2];
 };
+
+struct Subset
+{
+	int mat_index;
+	int vertexCount;
+	int vertexStart;
+};
+
+__declspec(align(256))
+struct Material
+{
+	float diffuse[3];
+	float alpha;
+	float ambient[3];
+	float specular[3];
+	float power;
+	float emmisive[3];
+};
+
 struct Mesh
 {
 	int vertexCount;
-	unsigned int* indexArray;
 	Vertex* vertecies;
+	int indexCount;
+	int* indexArray;
+	int subsetCount;
+	Subset* subset;
+	int materialCount;
+	Material* material;
+	string* textureName;
 };
 
 __declspec(align(256))
@@ -107,10 +132,12 @@ D3D12_INDEX_BUFFER_VIEW g_indexBufferView;
 ComPtr<ID3D12Resource> g_texture;
 ComPtr<ID3D12Resource> g_constantBuffer = nullptr;
 ComPtr<ID3D12Resource> g_lightBuffer = nullptr;
+ComPtr<ID3D12Resource> g_materialBuffer = nullptr;
 ConstantBuffer g_constantBufferData;
 LightBuffer g_lightBufferData;
 UINT8* g_pCbvDataBegin;
 UINT8* g_pCbv2DataBegin;
+UINT8* g_pCbv3DataBegin;
 
 Mesh g_mesh;
 
@@ -450,8 +477,9 @@ bool Update()
 {
 	static float angle = 0.0f;
 	angle += 0.01f;
-	g_constantBufferData.world = XMMatrixIdentity();
-	g_constantBufferData.view = XMMatrixLookAtLH({0.0f,100.0f,-300.0f,0.0f},{0.0f,100.0f,0.0f,0.0f},{0.0f,1.0f,0.0f,0.0f});
+	//g_constantBufferData.world = XMMatrixIdentity();
+	g_constantBufferData.world = XMMatrixRotationY(angle);
+	g_constantBufferData.view = XMMatrixLookAtLH({0.0f,3.0f * cosf(angle),-5.0f,0.0f},{0.0f,0.0f,0.0f,0.0f},{0.0f,1.0f,0.0f,0.0f});
 	g_constantBufferData.project = XMMatrixPerspectiveFovLH(0.78539816339744830961566084581988f,1280.0f/720.0f,1.0f,10000.0f);
 	memcpy(g_pCbvDataBegin,&g_constantBufferData,sizeof(g_constantBufferData));
 	g_lightBufferData.lightDirection = XMFLOAT3(0.0f,1.0f,1.0f);
@@ -510,11 +538,12 @@ bool PopulateCommandList()
 	// ディスクリプタヒープテーブルを設定.
 	auto handleCBV = g_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
 	auto handleSRV = g_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
-	handleSRV.ptr += g_cbvSrvDescriptorSize * 2;
+	handleSRV.ptr += g_cbvSrvDescriptorSize * 3;
 	g_commandList->SetGraphicsRootDescriptorTable( 0, handleCBV );
 	handleCBV.ptr += g_cbvSrvDescriptorSize;
 	g_commandList->SetGraphicsRootDescriptorTable( 1, handleCBV );
-	g_commandList->SetGraphicsRootDescriptorTable( 2, handleSRV );
+	handleCBV.ptr += g_cbvSrvDescriptorSize;
+	g_commandList->SetGraphicsRootDescriptorTable( 3, handleCBV );
 	//g_commandList->SetGraphicsRootDescriptorTable(1,g_cbvHeap->GetGPUDescriptorHandleForHeapStart());
 	//g_commandList->SetGraphicsRootDescriptorTable(1,g_srvHeap->GetGPUDescriptorHandleForHeapStart());
 	
@@ -552,7 +581,12 @@ bool PopulateCommandList()
 	g_commandList->IASetVertexBuffers(0, 1, &g_vertexBufferView);
 	g_commandList->IASetIndexBuffer(&g_indexBufferView);
 	//g_commandList->DrawInstanced(g_mesh.vertexCount, 1, 0, 0);
-	g_commandList->DrawIndexedInstanced(g_mesh.vertexCount, 1, 0, 0, 0);
+	for(int i = 0;i < g_mesh.subsetCount;i++)
+	{
+		g_commandList->SetGraphicsRootDescriptorTable( 2, handleCBV );
+		handleCBV.ptr += g_cbvSrvDescriptorSize;
+		g_commandList->DrawIndexedInstanced(g_mesh.subset[i].vertexCount, 1, g_mesh.subset[i].vertexStart, 0, 0);
+	}
 
 	//バックバッファを表示
 	{
@@ -921,7 +955,7 @@ bool CreateCommandList()
 bool CreateRootSignature()
 {
 	//記述子レンジの設定
-	D3D12_DESCRIPTOR_RANGE range[3];
+	D3D12_DESCRIPTOR_RANGE range[4];
 	range[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
 	range[0].NumDescriptors = 1;
 	range[0].BaseShaderRegister = 0;
@@ -934,15 +968,21 @@ bool CreateRootSignature()
 	range[1].RegisterSpace = 0;
 	range[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-	range[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	range[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
 	range[2].NumDescriptors = 1;
-	range[2].BaseShaderRegister = 0;
+	range[2].BaseShaderRegister = 2;
 	range[2].RegisterSpace = 0;
 	range[2].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
+	range[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	range[3].NumDescriptors = 1;
+	range[3].BaseShaderRegister = 0;
+	range[3].RegisterSpace = 0;
+	range[3].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
 
 	//ルートパラメータの設定
-	D3D12_ROOT_PARAMETER param[3];
+	D3D12_ROOT_PARAMETER param[4];
 	param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 	param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 	param[0].DescriptorTable.NumDescriptorRanges = 1;
@@ -957,6 +997,11 @@ bool CreateRootSignature()
 	param[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 	param[2].DescriptorTable.NumDescriptorRanges = 1;
 	param[2].DescriptorTable.pDescriptorRanges = &range[2];
+
+	param[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	param[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	param[3].DescriptorTable.NumDescriptorRanges = 1;
+	param[3].DescriptorTable.pDescriptorRanges = &range[3];
 
 	//サンプラーの設定
 	D3D12_STATIC_SAMPLER_DESC sampler = {};
@@ -1036,7 +1081,7 @@ bool CreatePipelineStateObject()
 	{
 		{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 		{"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-		//{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 	};
 
 	//ラスタライザーステートの設定
@@ -1157,7 +1202,9 @@ bool CreateVertexBuffer()
 	};*/
 
 
-	ifstream file("model.gmb",ios::binary);
+	//ifstream file("boxMaterial.gmb",ios::binary);
+	//ifstream file("SD_unitychan_humanoid.gmb",ios::binary);
+	ifstream file("boxMaterial.gmb",ios::binary);
 
 	if(!file.is_open())
 	{
@@ -1165,21 +1212,46 @@ bool CreateVertexBuffer()
 	}
 
 	file.read(reinterpret_cast<char*>(&g_mesh.vertexCount),sizeof(int));
+	file.read(reinterpret_cast<char*>(&g_mesh.indexCount),sizeof(int));
+	file.read(reinterpret_cast<char*>(&g_mesh.subsetCount),sizeof(int));
+	file.read(reinterpret_cast<char*>(&g_mesh.materialCount),sizeof(int));
+
 	g_mesh.vertecies = new Vertex[g_mesh.vertexCount];
-	g_mesh.indexArray = new unsigned int[g_mesh.vertexCount];
-	for(int i = 0;i < g_mesh.vertexCount;i++)
+	g_mesh.indexArray = new int[g_mesh.indexCount];
+	g_mesh.subset = new Subset[g_mesh.subsetCount];
+	
+
+	file.read(reinterpret_cast<char*>(g_mesh.vertecies),sizeof(Vertex) * g_mesh.vertexCount);
+	file.read(reinterpret_cast<char*>(g_mesh.indexArray),sizeof(int) * g_mesh.indexCount);
+	file.read(reinterpret_cast<char*>(g_mesh.subset),sizeof(Subset) * g_mesh.subsetCount);
+
+	g_mesh.material = nullptr;
+	if(g_mesh.materialCount > 0)
 	{
-		file.read(reinterpret_cast<char*>(&g_mesh.vertecies[i].position),sizeof(float) * 3);
+		g_mesh.material = new Material[g_mesh.materialCount];
+		g_mesh.textureName = new string[g_mesh.materialCount];
+		for(int i = 0;i < g_mesh.materialCount;i++)
+		{
+			file.read(reinterpret_cast<char*>(g_mesh.material[i].diffuse),sizeof(float) * 3);
+			file.read(reinterpret_cast<char*>(&g_mesh.material[i].alpha),sizeof(float));
+			file.read(reinterpret_cast<char*>(g_mesh.material[i].ambient),sizeof(float) * 3);
+			file.read(reinterpret_cast<char*>(g_mesh.material[i].specular),sizeof(float) * 3);
+			file.read(reinterpret_cast<char*>(&g_mesh.material[i].power),sizeof(float));
+			file.read(reinterpret_cast<char*>(g_mesh.material[i].emmisive),sizeof(float) * 3);
+
+
+			int nameLength;
+			file.read(reinterpret_cast<char*>(&nameLength),sizeof(int));
+
+			char* textureName = new char[nameLength];
+			file.read(textureName,nameLength);
+			g_mesh.textureName[i] = textureName;
+
+			//Todo:テクスチャ読み込み？
+		}
 	}
-	for(int i = 0;i < g_mesh.vertexCount;i++)
-	{
-		file.read(reinterpret_cast<char*>(&g_mesh.vertecies[i].normal),sizeof(float) * 3);
-	}
-	/*for(int i = 0;i < g_mesh.vertexCount;i++)
-	{
-		file.read(reinterpret_cast<char*>(&g_mesh.vertecies[i].textureCoord),sizeof(float) * 2);
-	}*/
-	file.read(reinterpret_cast<char*>(g_mesh.indexArray),sizeof(int) * g_mesh.vertexCount);
+
+	file.close();
 
 	const UINT vertexBufferSize = sizeof(Vertex) * g_mesh.vertexCount;
 
@@ -1232,7 +1304,7 @@ bool CreateVertexBuffer()
 
 
 
-	const UINT indexBufferSize = sizeof(int) * g_mesh.vertexCount;
+	const UINT indexBufferSize = sizeof(int) * g_mesh.indexCount;
 
 	if(FAILED(g_device->CreateCommittedResource(&heapProperties,
 		D3D12_HEAP_FLAG_NONE,&resourceDesc,D3D12_RESOURCE_STATE_GENERIC_READ,
@@ -1266,7 +1338,7 @@ bool CreateCbvSrv()
 	//定数バッファ、シェーダーリソースビュー用の記述子ヒープ作成
 	{
 		D3D12_DESCRIPTOR_HEAP_DESC desc = {};
-		desc.NumDescriptors = 3;	//定数バッファとシェーダリソースビューを作成するので2つ
+		desc.NumDescriptors = 3 + g_mesh.materialCount;	//定数バッファとシェーダリソースビューを作成するので2つ
 		desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 		desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 		if(FAILED(g_device->CreateDescriptorHeap(&desc,IID_PPV_ARGS(&g_cbvSrvHeap))))
@@ -1311,9 +1383,10 @@ bool CreateCbvSrv()
 		cbvDesc.SizeInBytes = sizeof(ConstantBuffer);
 
 		//定数バッファビュー作成
-		g_device->CreateConstantBufferView(&cbvDesc,g_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart());
-
+		D3D12_CPU_DESCRIPTOR_HANDLE handle = g_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart();
+		g_device->CreateConstantBufferView(&cbvDesc,handle);
 		g_cbvSrvDescriptorSize = g_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		handle.ptr += g_cbvSrvDescriptorSize;
 
 		D3D12_RANGE readRange = {0,0};
 		if( FAILED(g_constantBuffer->Map(0,&readRange,reinterpret_cast<void**>(&g_pCbvDataBegin) )))
@@ -1343,9 +1416,8 @@ bool CreateCbvSrv()
 		cbvDesc.SizeInBytes = sizeof(LightBuffer);
 
 		//定数バッファビュー作成
-		D3D12_CPU_DESCRIPTOR_HANDLE handle = g_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart();
-		handle.ptr += g_cbvSrvDescriptorSize;
 		g_device->CreateConstantBufferView(&cbvDesc,handle);
+		handle.ptr += g_cbvSrvDescriptorSize;
 
 		readRange = {0,0};
 		if( FAILED(g_lightBuffer->Map(0,&readRange,reinterpret_cast<void**>(&g_pCbv2DataBegin) )))
@@ -1354,6 +1426,38 @@ bool CreateCbvSrv()
 		}
 		g_lightBufferData.lightDirection = XMFLOAT3(0.0f,1.0f,1.0f);
 		memcpy(g_pCbv2DataBegin,&g_lightBufferData,sizeof(g_lightBufferData));
+
+		// ライト
+		desc.Width = sizeof(Material) * g_mesh.materialCount;
+
+		//リソース作成
+		if(FAILED(g_device->CreateCommittedResource(
+			&prop,D3D12_HEAP_FLAG_NONE,&desc,
+			D3D12_RESOURCE_STATE_GENERIC_READ,
+			nullptr,IID_PPV_ARGS(&g_materialBuffer))))
+		{
+			return false;
+		}
+
+		if( FAILED(g_materialBuffer->Map(0,nullptr,reinterpret_cast<void**>(&g_pCbv3DataBegin) )))
+		{
+			return false;
+		}
+
+		memcpy(g_pCbv3DataBegin,&g_mesh.material[0],sizeof(Material) * g_mesh.materialCount);
+
+		cbvDesc.BufferLocation = g_materialBuffer->GetGPUVirtualAddress();
+		cbvDesc.SizeInBytes = sizeof(Material);
+
+		for(int i = 0;i < g_mesh.materialCount;i++)
+		{
+			//定数バッファビュー作成
+			g_device->CreateConstantBufferView(&cbvDesc,handle);
+			handle.ptr += g_cbvSrvDescriptorSize;
+			cbvDesc.BufferLocation += sizeof(Material);
+		}
+
+		
 	}
 
 	//シェーダーリソースビューの作成
@@ -1462,7 +1566,7 @@ bool CreateCbvSrv()
 
 		//シェーダーリソースビューの作成
 		D3D12_CPU_DESCRIPTOR_HANDLE handle = g_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart();
-		handle.ptr += g_cbvSrvDescriptorSize * 2;
+		handle.ptr += g_cbvSrvDescriptorSize * 5;
 		g_device->CreateShaderResourceView(g_texture.Get(),&viewDesc,handle);
 
 		
